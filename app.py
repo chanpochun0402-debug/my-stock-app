@@ -7,7 +7,7 @@ from plotly.subplots import make_subplots
 # 1. 網頁基本配置
 st.set_page_config(page_title="獵人專業分析站", layout="wide")
 
-# 強制極致黑背景 CSS
+# CSS 強制極致黑背景
 st.markdown("""
     <style>
     .stApp { background-color: #000000; }
@@ -16,11 +16,12 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. 側邊欄：設定股票名稱與代號
+# 2. 側邊欄：更新後的股票清單
 stock_dict = {
     "2344 華邦電": "2344.TW",
-    "00983A 凱基美國A級債": "00983A.TW",
-    "009816 凱基美國優選債": "009816.TW",
+    "00981A 凱基美國優選債": "00981A.TW",
+    "009816 凱基美國優選債(月)": "009816.TW",
+    "00982A 凱基A級公司債": "00982A.TW",
     "1711 永光": "1711.TW"
 }
 
@@ -31,83 +32,85 @@ view_days = st.sidebar.slider("顯示天數", 30, 250, 100)
 
 st.title(f"📊 {selected_label} 技術觀測站")
 
-# 3. 抓取數據與計算指標
+# 3. 抓取數據與指標計算
 @st.cache_data(ttl=60)
-def fetch_analysis_data(ticker, days):
-    # 抓取較長數據以計算指標
-    raw = yf.download(ticker, period="1y", interval="1d")
-    if raw.empty: return None
+def fetch_full_analysis(ticker, days):
+    # 抓取較長歷史確保指標準確
+    df = yf.download(ticker, period="1y", interval="1d")
+    if df.empty: return None
     
     # 計算 KD (9, 3, 3)
-    low_9 = raw['Low'].rolling(window=9).min()
-    high_9 = raw['High'].rolling(window=9).max()
-    rsv = (raw['Close'] - low_9) / (high_9 - low_9) * 100
-    raw['K'] = rsv.ewm(com=2).mean()
-    raw['D'] = raw['K'].ewm(com=2).mean()
+    low_9 = df['Low'].rolling(window=9).min()
+    high_9 = df['High'].rolling(window=9).max()
+    rsv = (df['Close'] - low_9) / (high_9 - low_9) * 100
+    df['K'] = rsv.ewm(com=2).mean()
+    df['D'] = df['K'].ewm(com=2).mean()
     
-    return raw.tail(days)
+    return df.tail(days)
 
 try:
-    data = fetch_analysis_data(target_id, view_days)
+    data = fetch_full_analysis(target_id, view_days)
     
     if data is not None:
-        # 4. 建立子圖 (K線/成交量/KD線)
-        # 增加一列來放圖二要求的成交量走勢
+        # 4. 建立三層子圖：K線 / 成交量(圖二) / KD線
         fig = make_subplots(
             rows=3, cols=1, 
             shared_xaxes=True, 
             vertical_spacing=0.03, 
-            row_heights=[0.6, 0.15, 0.25]
+            row_heights=[0.55, 0.15, 0.3]
         )
 
-        # --- A. K線圖 (上) ---
+        # --- 第一層：K線圖 ---
         fig.add_trace(go.Candlestick(
             x=data.index, open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'],
             name="K線", increasing_line_color='#FF3232', decreasing_line_color='#00FF00'
         ), row=1, col=1)
 
-        # --- B. 即時成交量 (中) - 參考圖二圖示 ---
+        # --- 第二層：成交量柱狀圖 (圖二要求的圖示) ---
+        # 根據漲跌給成交量顏色
+        vol_colors = ['#FF3232' if c >= o else '#00FF00' for o, c in zip(data['Open'], data['Close'])]
         fig.add_trace(go.Bar(
             x=data.index, y=data['Volume'], name="成交量",
-            marker_color='rgba(0, 255, 0, 0.5)', showlegend=False
+            marker_color=vol_colors, opacity=0.8
         ), row=2, col=1)
 
-        # --- C. KD 指標 (下) ---
+        # --- 第三層：KD 線 ---
         fig.add_trace(go.Scatter(x=data.index, y=data['K'], name="K值 (黃)", line=dict(color='#FFD700', width=2)), row=3, col=1)
         fig.add_trace(go.Scatter(x=data.index, y=data['D'], name="D值 (藍)", line=dict(color='#1E90FF', width=2)), row=3, col=1)
 
-        # KD 參考線
-        fig.add_hline(y=80, line_dash="dash", line_color="rgba(255,0,0,0.3)", row=3, col=1)
+        # 80/20 參考線
+        fig.add_hline(y=80, line_dash="dash", line_color="rgba(255,50,50,0.3)", row=3, col=1)
         fig.add_hline(y=20, line_dash="dash", line_color="rgba(0,255,0,0.3)", row=3, col=1)
 
-        # 5. 視覺化樣式設定
+        # 5. 圖表視覺與 Y 軸自動對焦設定
         fig.update_layout(
             template="plotly_dark",
             paper_bgcolor='black',
             plot_bgcolor='black',
-            height=850,
+            height=900,
             xaxis_rangeslider_visible=False,
-            margin=dict(l=10, r=10, t=10, b=10)
+            margin=dict(l=10, r=10, t=10, b=10),
+            showlegend=False
         )
         
-        # 【關鍵修復】自動調整 Y 軸，不讓 K 線消失
-        fig.update_yaxes(autorange=True, fixedrange=False, row=1, col=1)
-        fig.update_yaxes(showticklabels=False, row=2, col=1) # 隱藏成交量數值
-        fig.update_yaxes(range=[0, 100], row=3, col=1)       # KD 固定 0-100
+        # 【解決漆黑問題的關鍵】
+        fig.update_yaxes(autorange=True, fixedrange=False, row=1, col=1) # K線自動縮放
+        fig.update_yaxes(showticklabels=False, row=2, col=1)            # 成交量隱藏標籤
+        fig.update_yaxes(range=[0, 100], row=3, col=1)                 # KD固定區間
         
         st.plotly_chart(fig, use_container_width=True)
 
         # 6. 即時診斷
-        curr_k = data['K'].iloc[-1]
-        curr_d = data['D'].iloc[-1]
+        k_val, d_val = data['K'].iloc[-1], data['D'].iloc[-1]
         st.markdown("---")
-        k1, k2, k3 = st.columns(3)
-        k1.metric("今日 K 值", f"{curr_k:.2f}")
-        k2.metric("今日 D 值", f"{curr_d:.2f}")
-        k3.info("趨勢：" + ("🔥 多方強勢" if curr_k > curr_d else "❄️ 整理修正"))
-
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("K值", f"{k_val:.2f}", f"{(k_val-data['K'].iloc[-2]):.2f}")
+        with col2:
+            st.metric("D值", f"{d_val:.2f}", f"{(d_val-data['D'].iloc[-2]):.2f}")
+            
     else:
-        st.error("目前無法獲取數據，請確認網路連線或稍後再試。")
+        st.error("查無數據，請確認 GitHub 網路連線或代號是否正確。")
 
 except Exception as e:
     st.error(f"系統錯誤: {e}")
